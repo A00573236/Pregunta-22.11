@@ -1,0 +1,189 @@
+
+<pre>
+<code>
+import pandas as pd
+import numpy as np
+from google.colab import files
+import statsmodels.api as sm
+from statsmodels.tsa.stattools import adfuller, kpss
+from statsmodels.tsa.arima.model import ARIMA
+import matplotlib.pyplot as plt
+
+# Upload Excel file
+print("Please upload Money Supply Excel file")
+upload = files.upload()
+filename = list(upload.keys())[0]
+df = pd.read_excel(filename)
+
+# Print available columns
+print("\nDataFrame columns:", list(df.columns))
+
+# Ask user for the correct column name
+value_column = input("Please enter the column name containing money supply values: ")
+
+# Extract money supply values using user-specified column name
+try:
+    money_supply = df[value_column]
+except KeyError:
+    print(f"Error: Column '{value_column}' not found in DataFrame")
+    print("Please check the column name and try again")
+    raise
+
+# Dictionary to store series
+series_dict = {'Money Supply': money_supply}
+
+# Create differenced series
+diff_dict = {
+    name: series.diff().dropna() for name, series in series_dict.items()
+}
+
+# Function for unit root tests with interpretation
+def unit_root_tests(series, name):
+    print(f"\nUnit Root Tests for {name}:")
+
+    # ADF Test
+    adf_result = adfuller(series)
+    print("ADF Test:")
+    print(f'ADF Statistic: {adf_result[0]:.4f}')
+    print(f'p-value: {adf_result[1]:.4f}')
+    print(f'Critical Values: {adf_result[4]}')
+    print("Interpretation:")
+    if adf_result[1] < 0.05:
+        print(f"  - p-value < 0.05: Reject null hypothesis - {name} is stationary")
+    else:
+        print(f"  - p-value >= 0.05: Fail to reject null - {name} may be non-stationary")
+
+    # KPSS Test
+    kpss_result = kpss(series)
+    print("\nKPSS Test:")
+    print(f'KPSS Statistic: {kpss_result[0]:.4f}')
+    print(f'p-value: {kpss_result[1]:.4f}')
+    print(f'Critical Values: {kpss_result[3]}')
+    print("Interpretation:")
+    if kpss_result[1] < 0.05:
+        print(f"  - p-value < 0.05: Reject null hypothesis - {name} is non-stationary")
+    else:
+        print(f"  - p-value >= 0.05: Fail to reject null - {name} may be stationary")
+
+# Perform unit root tests
+for name, series in series_dict.items():
+    unit_root_tests(series, name)
+
+# Plot original money supply values
+plt.figure(figsize=(12,6))
+for name, series in series_dict.items():
+    plt.plot(series, label=f'{name}')
+plt.title('Money Supply Values')
+plt.xlabel('Time')
+plt.ylabel('Value')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Plot differenced series
+plt.figure(figsize=(12,6))
+for name, diff_series in diff_dict.items():
+    plt.plot(diff_series, label=f'{name} Differenced')
+plt.title('Differenced Money Supply Series')
+plt.legend()
+plt.show()
+
+# Function to find best ARIMA model with interpretation
+def find_best_arima(series, name, max_p=3, max_d=2, max_q=3):
+    best_aic = float('inf')
+    best_order = None
+
+    for p in range(max_p + 1):
+        for d in range(max_d + 1):
+            for q in range(max_q + 1):
+                try:
+                    model = ARIMA(series, order=(p, d, q))
+                    results = model.fit()
+                    if results.aic < best_aic:
+                        best_aic = results.aic
+                        best_order = (p, d, q)
+                except:
+                    continue
+
+    print(f"\nBest ARIMA model for {name}:")
+    print(f"Order: {best_order}")
+    print(f"AIC: {best_aic:.2f}")
+    print("Interpretation:")
+    print(f"  - p={best_order[0]}: {best_order[0]} autoregressive term(s)")
+    print(f"  - d={best_order[1]}: {best_order[1]} difference(s) needed for stationarity")
+    print(f"  - q={best_order[2]}: {best_order[2]} moving average term(s)")
+    return best_order
+
+# Find and fit best ARIMA model
+arima_orders = {}
+for name, series in series_dict.items():
+    arima_orders[name] = find_best_arima(series, name)
+
+# Fit final ARIMA model and generate forecasts
+models = {}
+forecasts = {}
+forecast_steps = 30
+for name, series in series_dict.items():
+    model = ARIMA(series, order=arima_orders[name]).fit()
+    models[name] = model
+    forecasts[name] = model.forecast(steps=forecast_steps)
+
+# Create forecast index
+last_index = len(money_supply) - 1
+forecast_index = range(last_index + 1, last_index + 1 + forecast_steps)
+
+# Plot original series with forecasts
+plt.figure(figsize=(12,6))
+for name in series_dict.keys():
+    plt.plot(series_dict[name], label=f'{name} Historical')
+    plt.plot(forecast_index, forecasts[name], label=f'{name} Forecast', linestyle='--')
+plt.title('Money Supply with Forecasts')
+plt.legend()
+plt.show()
+
+# Detailed forecast plot with confidence intervals and interpretation
+def plot_forecast(model, series, name, steps=30):
+    forecast_obj = model.get_forecast(steps=steps)
+    forecast = forecast_obj.predicted_mean
+    conf_int = forecast_obj.conf_int()
+
+    forecast_index = range(len(series), len(series) + steps)
+
+    plt.figure(figsize=(12,6))
+    plt.plot(series, label=f'{name} Historical')
+    plt.plot(forecast_index, forecast, label='Forecast', color='red')
+    plt.fill_between(forecast_index,
+                    conf_int.iloc[:, 0],
+                    conf_int.iloc[:, 1],
+                    color='pink',
+                    alpha=0.3,
+                    label='95% Confidence Interval')
+    plt.title(f'{name} Forecast')
+    plt.legend()
+    plt.show()
+
+    # Forecast interpretation
+    last_value = series.iloc[-1]
+    mean_forecast = forecast.mean()
+    print(f"\nForecast Interpretation for {name}:")
+    print(f"Last observed value: {last_value:.2f}")
+    print(f"Average forecast value: {mean_forecast:.2f}")
+    print(f"Forecast change: {mean_forecast - last_value:.2f}")
+    if mean_forecast > last_value:
+        print("Trend: Upward forecast trend")
+    elif mean_forecast < last_value:
+        print("Trend: Downward forecast trend")
+    else:
+        print("Trend: Flat forecast trend")
+    print(f"95% CI range at period {steps}: [{conf_int.iloc[-1, 0]:.2f}, {conf_int.iloc[-1, 1]:.2f}]")
+
+# Generate detailed forecast plot and interpretation
+for name in series_dict.keys():
+    plot_forecast(models[name], series_dict[name], name)
+
+# Print forecast values
+for name in series_dict.keys():
+    print(f"\n{name} Forecast Values (next 5 periods):")
+    print(forecasts[name][:5])
+</code>
+</pre>
